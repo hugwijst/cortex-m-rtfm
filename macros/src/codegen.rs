@@ -1,5 +1,3 @@
-#![deny(warnings)]
-
 use proc_macro::TokenStream;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -242,6 +240,7 @@ fn resources(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2:
                             #(#attrs)*
                             #(#cfgs)*
                             #[doc = #symbol]
+                            #[export_name = #symbol]
                             static mut #alias: #ty = #expr;
                         )
                     })
@@ -250,6 +249,7 @@ fn resources(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2:
                             #(#attrs)*
                             #(#cfgs)*
                             #[doc = #symbol]
+                            #[export_name = #symbol]
                             static mut #alias: rtfm::export::MaybeUninit<#ty> =
                                 rtfm::export::MaybeUninit::uninitialized();
                         )
@@ -286,8 +286,7 @@ fn resources(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2:
             /// Resource proxies
             pub mod resources {
                 #(#module)*
-            }
-        ));
+            }));
     }
 
     quote!(#(#items)*)
@@ -372,6 +371,7 @@ fn init(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::Toke
         #module
 
         #(#attrs)*
+        #[export_name = "init::init"]
         #unsafety fn #init(mut core: rtfm::Peripherals) {
             #(#locals)*
 
@@ -958,19 +958,20 @@ fn idle(
         let unsafety = &idle.unsafety;
         let idle = &ctxt.idle;
 
+        let name = format!("idle::{}", idle);
         (
             quote!(
                 #module
 
                 #(#attrs)*
+                #[export_name = #name]
                 #unsafety fn #idle() -> ! {
                     #(#locals)*
 
                     #prelude
 
                     #(#stmts)*
-                }
-            ),
+                }),
             quote!(#idle()),
         )
     } else {
@@ -1021,9 +1022,9 @@ fn exceptions(ctxt: &mut Context, app: &App, analysis: &Analysis) -> Vec<proc_ma
             let start_let = match () {
                 #[cfg(feature = "timer-queue")]
                 () => quote!(
-                    #[allow(unused_variables)]
-                    let start = #baseline;
-                ),
+                        #[allow(unused_variables)]
+                        let start = #baseline;
+                    ),
                 #[cfg(not(feature = "timer-queue"))]
                 () => quote!(),
             };
@@ -1050,8 +1051,7 @@ fn exceptions(ctxt: &mut Context, app: &App, analysis: &Analysis) -> Vec<proc_ma
                     rtfm::export::run(move || {
                         #(#stmts)*
                     })
-                }
-            )
+                })
         })
         .collect()
 }
@@ -1129,8 +1129,7 @@ fn interrupts(
                 rtfm::export::run(move || {
                     #(#stmts)*
                 })
-            }
-        ));
+            }));
     }
 
     (quote!(#(#root)*), quote!(#(#scoped)*))
@@ -1168,10 +1167,10 @@ fn tasks(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::Tok
         let scheduleds_static = match () {
             #[cfg(feature = "timer-queue")]
             () => {
-                let scheduleds_symbol = format!("{}::SCHEDULED_TIMES::{}", name, scheduleds_alias);
+                let scheduleds_symbol = format!("{}::SCHEDULED_TIMES", name);
 
                 quote!(
-                    #[doc = #scheduleds_symbol]
+                    #[export_name = #scheduleds_symbol]
                     static mut #scheduleds_alias:
                     rtfm::export::MaybeUninit<[rtfm::Instant; #capacity_lit]> =
                         rtfm::export::MaybeUninit::uninitialized();
@@ -1181,19 +1180,19 @@ fn tasks(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::Tok
             () => quote!(),
         };
 
-        let inputs_symbol = format!("{}::INPUTS::{}", name, inputs_alias);
-        let free_symbol = format!("{}::FREE_QUEUE::{}", name, free_alias);
+        let inputs_symbol = format!("{}::INPUTS", name);
+        let free_symbol = format!("{}::FREE_QUEUE", name);
         items.push(quote!(
             // FIXME(MaybeUninit) MaybeUninit won't be necessary when core::mem::MaybeUninit
             // stabilizes because heapless constructors will work in const context
-            #[doc = #free_symbol]
+            #[export_name = #free_symbol]
             static mut #free_alias: rtfm::export::MaybeUninit<
                     rtfm::export::FreeQueue<#capacity_ty>
                 > = rtfm::export::MaybeUninit::uninitialized();
 
             #resource
 
-            #[doc = #inputs_symbol]
+            #[export_name = #inputs_symbol]
             static mut #inputs_alias: rtfm::export::MaybeUninit<[#ty; #capacity_lit]> =
                 rtfm::export::MaybeUninit::uninitialized();
 
@@ -1262,9 +1261,11 @@ fn tasks(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::Tok
             #[cfg(not(feature = "timer-queue"))]
             () => quote!(),
         };
+        let task_symbol = name.to_string();
         items.push(quote!(
             #(#attrs)*
             #(#cfgs)*
+            #[export_name = #task_symbol]
             #unsafety fn #task_alias(#baseline_arg #(#inputs,)*) {
                 #(#locals)*
 
@@ -1307,7 +1308,7 @@ fn dispatchers(
                 )
             })
             .collect::<Vec<_>>();
-        let symbol = format!("P{}::READY_QUEUE::{}", level, ready_alias);
+        let symbol = format!("P{}::READY_QUEUE", level);
         let e = quote!(rtfm::export);
         let ty = quote!(#e::ReadyQueue<#enum_alias, #capacity>);
         let ceiling = *analysis.ready_queues.get(&level).unwrap_or(&0);
@@ -1326,7 +1327,7 @@ fn dispatchers(
             #[allow(non_camel_case_types)]
             enum #enum_alias { #(#variants,)* }
 
-            #[doc = #symbol]
+            #[export_name = #symbol]
             static mut #ready_alias: #e::MaybeUninit<#ty> = #e::MaybeUninit::uninitialized();
 
             #resource
@@ -1662,7 +1663,7 @@ fn timer_queue(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro
     let tq = &ctxt.timer_queue;
     let symbol = format!("TIMER_QUEUE::{}", tq);
     items.push(quote!(
-        #[doc = #symbol]
+        #[export_name = #symbol]
         static mut #tq:
             rtfm::export::MaybeUninit<rtfm::export::TimerQueue<#enum_, #cap>> =
                 rtfm::export::MaybeUninit::uninitialized();
